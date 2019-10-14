@@ -1,56 +1,57 @@
-use actix_web::{web, App, HttpRequest, HttpResponse, Responder, HttpServer, middleware};
+use actix_web::{middleware, web, App, HttpResponse, HttpServer};
 use futures::Future;
-use reqwest::{Error};
-use reqwest::r#async::Client as HttpClient;
+use reqwest;
+use reqwest::Client as BlockingClient;
 
-fn hello() -> impl Responder {
-    HttpResponse::Ok().body("Hello world!")
+static REDDIT: &str = "http://www.reddit.com/r/rust.json";
+static SLOWWLY: &str =
+    "http://slowwly.robertomurray.co.uk/delay/5000/url/http://www.reddit.com/r/rust.json";
+
+fn get_request(builder: reqwest::RequestBuilder) -> impl Future<Item = HttpResponse, Error = actix_web::Error> {
+    actix_web::web::block(move || builder.send())
+        .from_err()
+        .and_then(|mut res| match res.text() {
+            Ok(body) => HttpResponse::Ok()
+                .content_type("application/json")
+                .body(body),
+            Err(error) => {
+                println!("get_request error: {}", error);
+                HttpResponse::InternalServerError()
+                    .content_type("application/json")
+                    .body(format!("{{\"error\": \"Error getting response text.\"}}"))
+            }
+        })
 }
 
-fn get_rust_posts() -> impl Future<Item = String, Error = String> {
-    Box::new(HttpClient::new().get("http://www.reddit.com/r/rust.json").send()
-    .and_then(|resp| resp.text())
-    .map_err(|error| format!("Error: {:?}", error))
+fn get_rust_posts(
+    _req: actix_web::HttpRequest,
+    client: web::Data<BlockingClient>,
+) -> impl Future<Item = HttpResponse, Error = actix_web::Error> {
+    let builder = client.get(REDDIT);
+    get_request(builder)
+}
 
-
-
-        // .and_then(|mut resp| resp)
-        // .map(|_| {
-        //     HttpResponse::Ok().body(actix_web::body::Body::from("asdf"))
-        // })
-        // .map_err(|error| format!("Error: {:?}", error))
-
-    // .map_err(|error| format!("Error: {:?}", error))
-    // .map(|resp| resp)
-    // HttpResponse::Ok()
-
-
-
-    // client
-    //     .get("http://www.reddit.com/r/rust.json") // create request builder
-    //     .header("User-Agent", "Actix-web")
-    //     .send() // send http request
-    //     .map_err(Error::from)
-    //     .and_then(|resp| Ok::<HttpResponse, Error>(HttpResponse::Ok().streaming(resp)))
+fn get_rust_posts_slowwly(
+    _req: actix_web::HttpRequest,
+    client: web::Data<BlockingClient>,
+) -> impl Future<Item = HttpResponse, Error = actix_web::Error> {
+    let builder = client.get(SLOWWLY);
+    get_request(builder)
 }
 
 fn main() {
-    // HttpServer::new(|| {
-    //     App::new()
-    //         .wrap(middleware::Logger::default())
-    //         .service(web::resource("/get/rust/posts").route(web::get().to_async(get_rust_posts)))
-    //     // App::new()
-    //     //     .route("/", web::get().to(index))
-    //     //     .route("/again", web::get().to(index2))
-    // })
     HttpServer::new(|| {
         App::new()
-            .route("/hello/", web::get().to(hello))
-            .route("/get/rust/posts/", web::get().to_async(get_rust_posts))
+            .data(BlockingClient::new())
+            .wrap(middleware::Logger::default())
+            .service(web::resource("/get/rust/posts").route(web::get().to_async(get_rust_posts)))
+            .service(
+                web::resource("/get/rust/posts/slowwly")
+                    .route(web::get().to_async(get_rust_posts_slowwly)),
+            )
     })
     .bind("127.0.0.1:8000")
     .unwrap()
     .run()
     .unwrap();
-    println!("Hello, world!");
 }
